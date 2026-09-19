@@ -7,7 +7,7 @@ multimodal (vision) model, returning the model's text reply.
 import os
 import base64
 from dotenv import load_dotenv
-from groq import Groq
+from groq import Groq, NotFoundError
 
 load_dotenv()
 
@@ -26,9 +26,13 @@ def _get_groq_api_key() -> str | None:
 
 GROQ_API_KEY = _get_groq_api_key()
 
-# Groq's currently supported multimodal model (llama-4-scout was retired
-# by Groq on 2026-06-17 for free/developer tiers; qwen3.6-27b replaced it).
-VISION_MODEL = "qwen/qwen3.6-27b"
+# Pehla model try hoga, agar Groq ne hata diya ho toh agla try hoga.
+# Groq models list: https://console.groq.com/docs/models
+VISION_MODELS = [
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+]
+VISION_MODEL = VISION_MODELS[0]
 
 
 def encode_image(image_path: str) -> str:
@@ -45,7 +49,7 @@ def encode_image_bytes(image_bytes: bytes) -> str:
 def analyze_image_with_query(query: str, encoded_image: str, model: str = VISION_MODEL) -> str:
     """
     Send a base64-encoded image plus a text query to a Groq vision model
-    and return the plain-text reply.
+    and return the plain-text reply. Model not found hone par next model try karta hai.
     """
     api_key = GROQ_API_KEY or _get_groq_api_key()
     if not api_key:
@@ -69,9 +73,28 @@ def analyze_image_with_query(query: str, encoded_image: str, model: str = VISION
         }
     ]
 
-    chat_completion = client.chat.completions.create(
-        model=model,
-        messages=messages,
-    )
+    # Diya hua model pehle, phir baaki fallback models (duplicate hata ke)
+    candidates = [model] + [m for m in VISION_MODELS if m != model]
 
-    return chat_completion.choices[0].message.content
+    last_error = None
+    for candidate in candidates:
+        try:
+            chat_completion = client.chat.completions.create(
+                model=candidate,
+                messages=messages,
+            )
+            return chat_completion.choices[0].message.content
+        except NotFoundError as e:
+            last_error = e
+            continue
+
+    # Koi bhi model nahi mila: account pe jo models available hain unki list dikhao
+    try:
+        available = [m.id for m in client.models.list().data]
+    except Exception:
+        available = []
+
+    raise RuntimeError(
+        f"Koi vision model available nahi mila (tried: {candidates}). "
+        f"Groq pe available models: {available}. Last error: {last_error}"
+    )
